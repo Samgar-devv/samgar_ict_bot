@@ -1,6 +1,8 @@
+import os
 import json
 import asyncio
 from datetime import datetime
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
@@ -9,8 +11,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# --- Твой токен ---
-TOKEN = "7883022139:AAGz7VOUdmoC_dwr7_EumyxSFY74IEcjb1k"
+# --- Настройки ---
+TOKEN = os.getenv("BOT_TOKEN", "7883022139:AAGz7VOUdmoC_dwr7_EumyxSFY74IEcjb1k")  # ← замени на свой токен
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://samgar-ict-bot.onrender.com/webhook")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -18,7 +21,7 @@ scheduler = AsyncIOScheduler()
 
 DATA_FILE = "data.json"
 
-# --- Функции сохранения/загрузки данных ---
+# --- Работа с JSON ---
 def load_data():
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -40,7 +43,7 @@ main_menu = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# --- FSM состояния ---
+# --- Состояния ---
 class AddTask(StatesGroup):
     waiting_for_task = State()
 
@@ -50,16 +53,16 @@ class Schedule(StatesGroup):
 class Reminder(StatesGroup):
     waiting_for_text = State()
 
-# --- /start ---
+# --- Команда /start ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
-        "Сәлем 👋\nМен — студенттің көмекші құралымын!\n\n"
+        "Сәлем 👋 Мен студенттің көмекшісімін!\n\n"
         "📚 /add - үй тапсырмасын қосу\n"
         "📋 /list - тапсырмалар тізімі\n"
         "🗓️ /schedule - сабақ кестесі\n"
-        "⏰ /remind - еске салғыш орнату\n"
-        "🧹 /clear - барлық тапсырмаларды өшіру\n"
+        "⏰ /remind - еске салғыш\n"
+        "🧹 /clear - өшіру\n"
         "🔗 /links - пайдалы сілтемелер",
         reply_markup=main_menu
     )
@@ -83,7 +86,7 @@ async def save_task(message: types.Message, state: FSMContext):
 async def list_tasks(message: types.Message):
     data = load_data()
     if not data["tasks"]:
-        await message.answer("📭 Тапсырмалар тізімі бос.", reply_markup=main_menu)
+        await message.answer("📭 Тапсырмалар жоқ.", reply_markup=main_menu)
     else:
         tasks = "\n".join([f"{i+1}. {t}" for i, t in enumerate(data["tasks"])])
         await message.answer(f"📋 Үй тапсырмалары:\n\n{tasks}", reply_markup=main_menu)
@@ -129,11 +132,7 @@ async def save_schedule(message: types.Message, state: FSMContext):
     chat_id = str(message.chat.id)
     data = load_data()
 
-    if "schedule" not in data:
-        data["schedule"] = {}
-    if chat_id not in data["schedule"]:
-        data["schedule"][chat_id] = {}
-
+    data.setdefault("schedule", {}).setdefault(chat_id, {})
     data["schedule"][chat_id][week_days[day_index]] = message.text
     save_data(data)
 
@@ -169,11 +168,27 @@ async def set_reminder(message: types.Message, state: FSMContext):
 async def send_reminder(chat_id, text):
     await bot.send_message(chat_id, f"🔔 Еске салғыш: {text}")
 
-# --- Запуск ---
-async def main():
+# --- Webhook ---
+async def handle_webhook(request):
+    update = await request.json()
+    await dp.feed_update(bot, types.Update(**update))
+    return web.Response()
+
+async def on_startup(app):
     scheduler.start()
-    print("✅ Бот іске қосылды!")
-    await dp.start_polling(bot)
+    await bot.set_webhook(WEBHOOK_URL)
+    print("✅ Webhook орнатылды!")
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+    print("🛑 Бот тоқтатылды!")
+
+def main():
+    app = web.Application()
+    app.router.add_post("/webhook", handle_webhook)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
